@@ -7,7 +7,7 @@ public:
 
   void select() {
     digitalWrite(_pinCS, LOW);
-    SPI.beginTransaction(SPISettings(14000000, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
   }
 
   uint8_t write(uint8_t x) {
@@ -23,7 +23,7 @@ private:
   int _pinCS;
 };
 
-class Si4x6xBase {
+class Si446xBase {
 public:
   enum ModulationType {
     kModCW    = 0,
@@ -47,6 +47,7 @@ public:
   };  
 
   enum State {
+    kStateNoChange  = 0,
     kStateSleep     = 1,
     kStateSPIActive = 2,
     kStateReady     = 3,
@@ -59,7 +60,7 @@ public:
 
 
 
-class Si4x6x : public Si4x6xBase, SPIDevice {
+class Si446x : public Si446xBase, SPIDevice {
 public:
   struct PartInfo {
     uint16_t getPartID() {
@@ -74,16 +75,24 @@ public:
   };
 
   struct IRQStatus {
+    bool isPacketSentPending() {
+      return rawData[2] & (1 << 5);
+    }
+    
     bool isPacketRXPending() {
       return rawData[2] & (1 << 4);
     }
 
-    bool isPacketRX() {
-      return rawData[3] & (1 << 4);
-    }
-
     bool isCRCErrorPending() {
       return rawData[2] & (1 << 3);
+    }
+
+    bool isPacketSent() {
+      return rawData[3] & (1 << 5);
+    }
+
+    bool isPacketRX() {
+      return rawData[3] & (1 << 4);
     }
     
     uint8_t   rawData[8];
@@ -147,39 +156,62 @@ public:
     uint8_t   rawData[3];
   };  
   
-  //Si4x6x(SPI &spi, PinName pinCS, uint32_t xtalFrequency, bool isTCXO = false);
-  Si4x6x(int pinCS, uint32_t xtalFrequency, bool isTCXO = false);
+  //Si446x(SPI &spi, PinName pinCS, uint32_t xtalFrequency, bool isTCXO = false);
+  Si446x(int pinCS, uint32_t xtalFrequency);
+
+  bool configure(uint8_t *params);
 
   void getPartInfo(PartInfo &info);
+  uint8_t getState();
   
   void shutdown();
-  void powerUp(uint8_t bootOptions = 0x01);
+  void powerUpTCXO(uint8_t bootOptions = 0x01);
+  void powerUpXTAL(uint8_t bootOptions = 0x01);
+
+  void setXOTune(uint8_t xoTune);
+  void setGlobalConfig(uint8_t globalConfig);
+  
   void setPowerLevel(uint8_t level);
+  void setPAConfig(uint8_t mode, uint8_t level, uint8_t duty, uint8_t tc);
   void configureGPIO(uint8_t gpio0, uint8_t gpio1, uint8_t gpio2, uint8_t gpio3, uint8_t nirq, uint8_t sdo, uint8_t genConfig);
 
   void enableTX();
   void disableRadio();
 
   void setFrequency(uint32_t freq);
-  void startTX(uint8_t channel, uint16_t pktLength = 0, State txCompleteState = 0);
-  void startRX(uint8_t channel, uint16_t pktLength = 0);
+  void startTX(uint8_t channel, uint16_t pktLength = 0, State txCompleteState = kStateNoChange);
+  void startRX(uint8_t channel, uint16_t pktLength = 0, State preambleTimeoutState = kStateNoChange, State validPacketState = kStateReady, State invalidPacketState = kStateReady);
 
   void setModulation(ModulationType modType, ModulationSource modSource = kSourceFIFO, uint8_t txDirectModeGPIO = 0, uint8_t txDirectModeType = 0);
+  void setNCOModulo(NCOModulo osr, uint32_t ncoFreq);
   void setDataRate(uint32_t dataRate);
   void setDeviation(uint32_t deviation);
-  
-  void setNCOModulo(NCOModulo osr);
+  void setModemParams(uint8_t modemControl, uint8_t ifControl, uint32_t ifFreq, uint8_t cfg1, uint8_t cfg2);
+  void setBCRParams(uint16_t osr, uint32_t ncoOffset, uint16_t gain, uint8_t gear, uint8_t misc1);
+  void setAFCParams(uint8_t gear, uint8_t wait, uint16_t gain, uint16_t limiter, uint8_t misc);
+  void setAGCControl(uint8_t mode);
+  void setAGCParams(uint8_t windowSize, uint8_t rfpdDecay, uint8_t ifpdDecay, uint16_t fsk4Gain, uint16_t fsk4Threshold, uint8_t fsk4Map, uint8_t ookPDTC);
+  void setRSSIMode(uint8_t mode);
+  void setRSSIComp(uint8_t comp);
+  void setRSSIThreshold(uint8_t threshold);
   
   void setPreambleLength(uint8_t length);
-  void setSync(uint8_t config);
+  void setPreambleConfig(uint8_t config);
+  void setSync(uint8_t config, uint16_t syncWord = 0);
+  void setPacketConfig(uint8_t config);
+  void setField1Config(uint8_t config);
 
-  void flushTX();
   void writeTX(const uint8_t *data, uint8_t length);
-
-  void flushRX();
-  void readRX(uint8_t *data, uint8_t length);
+  void flushTX();
 
   uint8_t getAvailableRX();
+  void readRX(uint8_t *data, uint8_t length);
+  void flushRX();
+
+  void setIntControl(bool enableChipInt, bool enableModemInt, bool enablePHInt);
+  void setPHInterrupts(uint8_t mask);
+
+  //void check(uint8_t param1, uint8_t param2);
 
   void clearIRQ();
   void clearIRQ(IRQStatus &status);
@@ -191,8 +223,11 @@ public:
   
 private: 
   bool waitForCTS(uint16_t timeout = 10);
-  bool waitForResponse(uint8_t *buf = 0, uint8_t len = 0, uint16_t timeout = 10);
-  bool sendCommand(uint8_t cmd, const uint8_t *params = 0, uint8_t paramsLength = 0, uint8_t *reply = 0, uint8_t replyLength = 0);
+  bool waitForResponse(uint8_t *buf = 0, uint8_t len = 0, uint16_t timeout = 200);
+  bool sendCommand(uint8_t cmd, const uint8_t *params = 0, uint8_t paramsLength = 0, uint8_t *reply = 0, uint8_t replyLength = 0, bool waitForCTS = true);
+
+  void setParameter(uint16_t id, uint8_t value);
+  void setParameter16(uint16_t id, uint16_t value);
 
   void setState(State state);
 
@@ -200,9 +235,7 @@ private:
   //DigitalOut  _cs;
   
   uint32_t    _xtalFrequency;
-  bool        _isTCXO;
   uint8_t     _outDiv;
-  uint32_t    _pfdFrequency;
 
   /*
   uint8_t     _intPend,   _intStatus;

@@ -7,74 +7,101 @@ enum Mode {
   MODE_TX = 2
 };
 
-Mode mode;
+#include "radio_config_Si4362.h"
+Mode mode = MODE_RX;
+
+//#include "radio_config_Si4060.h"
+//Mode mode = MODE_TX;
 
 const int pinCS = 10;
 const int pinBuzzer = 7;
 const int pinLED = 8;
 
+const uint8_t kPacketLength = 16;
+
 const uint32_t xoFrequency = 26000000UL;
+const uint8_t  xoTune      = 27;
 
+Si446x tx(pinCS, xoFrequency);
 
-Si4x6x tx(pinCS, xoFrequency, false);
-
-
-uint8_t enqueueRTTY7Bit(const char *str) {
-  uint8_t ex = 0;
-  uint8_t nBits = 0;
-  uint8_t count = 0;
-  
-  ex = 0xFF;
-  tx.writeTX(&ex, 1);
-  count++;
-  
-  while (*str) {
-    uint16_t c = (*str) & 0x7F;   // Take lower 7 bits   
-    //c = (c << 2) | 0b11;  // Add 2 stop bits
-    c = (c << 1) | 0x300;
-    
-    for (uint8_t idx = 0; idx < 10; idx++) {
-      uint8_t bit = (c & 1) ? 1 : 0;
-      c >>= 1;
-      ex <<= 1;
-      ex |= bit;
-      nBits++;
-      if (nBits == 8) {
-        nBits = 0;
-        tx.writeTX(&ex, 1);
-        Serial.print(ex, HEX);
-        Serial.print(' ');
-        count++;
-        ex = 0;
-      }
-    }
-    
-    str++;
-  }
-  
-  if (nBits != 0) {
-    while (nBits < 8) {
-      ex <<= 1;
-      ex |= 1;
-      nBits++;
-    }
-    tx.writeTX(&ex, 1);
-    Serial.print(ex, HEX);
-    Serial.print(' ');
-    count++;
-  }
-  
-  ex = 0xFF;
-  tx.writeTX(&ex, 1);
-  count++;
-
-  Serial.println();
-
-  return count;
+void initModemAlt()
+{  
+  for (uint8_t nTry = 3; nTry > 0; nTry--) {
+    Serial.println("Initializing radio...");
+    uint8_t config[] = RADIO_CONFIGURATION_DATA_ARRAY;
+    if (tx.configure(config)) break;
+    Serial.println("Failed");
+    delay(100);
+  }    
 }
 
+void initModem()
+{ 
+  for (uint8_t nTry = 3; nTry > 0; nTry--) {
+    if (mode == MODE_RX) {
+      tx.powerUpXTAL();
+    }
+    if (mode == MODE_TX) {
+      tx.powerUpTCXO();
+    }
+    delay(100);
+  }
 
+  if (mode == MODE_RX) {
+    tx.configureGPIO(0x15, 0x11, 0, 0, 0, /* sdo */ 0x40 | 0x0B, 0);
+  }
+  if (mode == MODE_TX) {
+    tx.configureGPIO(0x44, 0x0F, 0, 0, 0, /* sdo */ 0x40 | 0x0B, 0);
+  }
 
+  Si446x::PartInfo info;
+  tx.getPartInfo(info);
+  Serial.print("Part ID: "); Serial.println(info.getPartID(), HEX);
+  switch (info.getPartID()) {
+    case 0x4362: Serial.println("Silabs Si4362 detected, switching to RX mode"); mode = MODE_RX; break;
+    case 0x4060: Serial.println("Silabs Si4060 detected, switching to TX mode"); mode = MODE_TX; break;
+    default:
+      mode = MODE_IDLE; 
+      break;
+  }
+
+  tx.setGlobalConfig(0x60);
+
+  if (mode == MODE_TX) {
+    tx.setXOTune(0);
+    //tx.setIntControl(false, false, true);   // Enable only Packet Handler interrupts
+    //tx.setPHInterrupts(0x20);               // Enable PACKET_SENT interrupt
+    tx.setPreambleLength(0x0A);
+  }
+  if (mode == MODE_RX) {
+    tx.setXOTune(xoTune);
+    //tx.setIntControl(false, false, true);   // Enable only Packet Handler interrupts
+    //tx.setPHInterrupts(0x18);               // Enable PACKET_RX and CRC_ERROR interrupts
+  }
+
+  tx.setFrequency(434.000 * 1E6);
+
+  tx.setPreambleConfig(0x31);
+  tx.setSync(0x01, 0xB42B);
+  tx.setPacketConfig(0x02);
+  tx.setField1Config(0x04);
+
+  tx.setModulation(Si446xBase::kMod2FSK, Si446xBase::kSourceFIFO);
+  tx.setNCOModulo(Si446xBase::kModulo10, xoFrequency);
+  tx.setDataRate(10 * 1000);
+  tx.setDeviation(20000);
+  tx.setModemParams(0x80, 0x08, 0x038000ul, 0x30, 0x20);
+  tx.setBCRParams(1625, 20649, 40, 0x02, 0xC2);
+
+  if (mode == MODE_TX) {
+    tx.setPAConfig(0x18, 0x10, 0xC0, 0x3D);     // mode, level, duty, tc
+  }
+  if (mode == MODE_RX) {
+    tx.setRSSIMode(0x02);
+    tx.setRSSIThreshold(0x40);
+    tx.setRSSIComp(0x40);
+  }
+}
 
 void setup() {
   // put your setup code here, to run once:
@@ -94,88 +121,126 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Reset!");
 
-  for (uint8_t nTry = 3; nTry > 0; nTry--) {
-    tx.powerUp();
-    delay(100);
-  }
-
-  tx.configureGPIO(0, 0, 0, 0, 0, /* sdo */ 0x40 | 0x0B, 0);
-  //tx.configureGPIO(0, 0, 0, 0, 0, /* sdo */ 0, 0);
-
-  Si4x6x::PartInfo info;
-  tx.getPartInfo(info);
-  Serial.print("Part ID: "); Serial.println(info.getPartID(), HEX);
-  switch (info.getPartID()) {
-    case 0x4362: Serial.println("Silabs Si4362 detected, switching to RX mode"); mode = MODE_RX; break;
-    case 0x4060: Serial.println("Silabs Si4060 detected, switching to TX mode"); mode = MODE_TX; break;
-    default:
-      mode = MODE_IDLE; 
-      break;
-  }
+  initModemAlt();
 
 
   tx.clearIRQ();
-  tx.disableRadio();
+  //tx.disableRadio();
+  //tx.clearIRQ();
   delay(500);
 
+  if (mode == MODE_RX) {  
+    tx.startRX(0, kPacketLength, Si446x::kStateNoChange, Si446x::kStateRX, Si446x::kStateRX);
+  }  
+}
+
+void parseCommand(const String & line) {
+  if (line.length() == 0) return;
+  Serial.println(line);
   
-  if (mode == MODE_TX) tx.setPowerLevel(0x10);
-
-  tx.setNCOModulo(Si4x6xBase::kModulo10);
-  tx.setDataRate(50);
-  tx.setDeviation(1300);
+  int delimIndex = line.indexOf(' ');
+  bool parseError = false;
+  if (delimIndex > 0) {
+    String cmd = line.substring(0, delimIndex);
+    String args = line.substring(delimIndex + 1);
+    if (cmd == String("xo")) {
+      tx.setXOTune(args.toInt());
+    }
+    if (cmd == String("tx")) {
+      mode = MODE_TX;
+      initModem();
+    }
+    if (cmd == String("rx")) {
+      mode = MODE_RX;
+      initModem();
+    }
+    else {
+      parseError = true;
+    }
+  }
+  else {    
+    String cmd = line;
+    //if (cmd == String("kp")) {
+    //}
+    parseError = true;
+  }
   
-  tx.setModulation(Si4x6xBase::kMod2FSK, Si4x6xBase::kSourceFIFO);
-  //tx.setModulation(Si4x6xBase::kMod2GFSK, Si4x6xBase::kSourcePN9);
+  if (!parseError) {
+    Serial.println("OK");
+  }
+  else {
+    Serial.println("ERROR");
+  }
+}
 
-  //tx.setPreambleLength(0);  // Disable packet preamble
-  //tx.setSync(0x80);         // Disable sync word
-
-  delay(100);
-
-  tx.setFrequency(434.000 * 1E6);
-
-  delay(500); 
-
-  if (mode == MODE_RX) {
-    tx.startRX(0, 5);
+void processConsole() {
+  static uint8_t len;
+  static char line[80];
+  
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      line[len++] = '\0';
+      parseCommand(line);
+      len = 0;
+      break;
+    }
+    else {
+      if (len < 80 - 1) line[len++] = c;
+    }
   }
 }
 
 void loop() {
-  //uint8_t len = enqueueRTTY7Bit("abcdefghijklmnopqrstuvwxyz 1234567890\r\n");
+  static uint16_t count;
+  
+  processConsole();
+  
+  if (mode == MODE_TX && count == 200) {
+    count = 0;
 
-  if (mode == MODE_TX) {
     int16_t temp = tx.getTemperature();
     Serial.print("Temperature: "); Serial.print(temp / 10); Serial.print('.'); Serial.println(temp % 10);
-    
-    Serial.println("Transmitting...");
-  
-    //tx.flushTX();
-  
-    uint8_t data[] = { 0x03, 0xAA, 0x2F, 0x2F, 0xBB };
-  
-    tx.clearIRQ();
-    
-    tx.writeTX(data, sizeof(data)); 
-    //tx.startTX(0, sizeof(data));
-    tx.startTX(0, sizeof(data));
-    
-    //tx.enableRadio();
-
 
     digitalWrite(pinLED, HIGH);
     delay(100);
     digitalWrite(pinLED, LOW);
+    Serial.println("Transmitting...");
   
-    delay(3000);
+    uint8_t data[kPacketLength] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
+  
+
+    for (uint8_t idx = 0; idx < 8; idx++) 
+    {
+      uint16_t nTry = 100;
+      while (nTry > 0) {
+        Si446x::IRQStatus irqStatus;
+        tx.clearIRQ(irqStatus);
+
+        if (irqStatus.isPacketSentPending()) {     
+          break;
+        }
+        delay(10);
+        nTry--;
+      }
+      tx.clearIRQ();
+      tx.writeTX(data, kPacketLength); 
+      tx.startTX(0, kPacketLength);      
+    }
   }
-  else {
-    Si4x6x::ModemStatus modemStatus;
+  else if (mode == MODE_RX && count == 50) {
+    count = 0;
+
+    /*
+    uint8_t state = tx.getState();
+    Serial.print("State=");
+    Serial.print(state);
+
+    Si446x::ModemStatus modemStatus;
     tx.getModemStatus(modemStatus);
     //tx.getChipStatus();
 
-    Serial.print("RSSI=");
+    Serial.print(" RSSI=");
     Serial.println(modemStatus.getCurrentRSSI());
 
 
@@ -193,47 +258,51 @@ void loop() {
     if (modemStatus.isInvalidPreamble()) Serial.print("PRE_INVALID ");
     if (modemStatus.isSyncDetect()) Serial.print("SYN_DET ");
     if (modemStatus.isInvalidSync()) Serial.print("SYN_INVALID ");
-    Serial.println();
-    
+    Serial.println();   
+     */
 
-    Si4x6x::IRQStatus irqStatus;
+
+
+
+    Si446x::IRQStatus irqStatus;
     tx.clearIRQ(irqStatus);
 
-
-    /*
     Serial.print("IRQ: ");
     for (uint8_t idx = 0; idx < 8; idx++) {
       Serial.print(irqStatus.rawData[idx], HEX);
       Serial.print(' ');
     }
     Serial.println();
-    */
 
     if (irqStatus.isPacketRXPending())
     {
       uint8_t rxCount = tx.getAvailableRX();
-      Serial.print("Available: ");
-      Serial.println(rxCount);
+      if (rxCount > 0) {
+        Serial.print("Available: ");
+        Serial.println(rxCount);
+      }
 
+      
       Serial.print("Packet: ");
       
-      uint8_t packet[5];
-      tx.readRX(packet, 5);
+      uint8_t packet[kPacketLength];
+      tx.readRX(packet, kPacketLength);
 
-      for (uint8_t idx = 0; idx < 5; idx++) {
+      for (uint8_t idx = 0; idx < kPacketLength; idx++) {
         Serial.print(packet[idx], HEX);
         Serial.print(' ');
       }
       Serial.println();
       
-      //digitalWrite(pinBuzzer, HIGH);
-      //delay(250);
-      //digitalWrite(pinBuzzer, LOW);
+      digitalWrite(pinBuzzer, HIGH);
+      delay(250);
+      digitalWrite(pinBuzzer, LOW);
     }
     if (irqStatus.isCRCErrorPending()) {
       tx.flushRX();
     }
-
-    delay(500);
   }
+
+  count++;
+  delay(10);
 }
