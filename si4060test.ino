@@ -17,10 +17,11 @@ const int pinCS = 10;
 const int pinBuzzer = 7;
 const int pinLED = 8;
 
-const uint8_t kPacketLength = 16;
+const uint8_t kPacketLength = 7;
+const uint8_t kMaxPacketLength = 7;
 
 const uint32_t xoFrequency = 26000000UL;
-const uint8_t  xoTune      = 27;
+const uint8_t  xoTune      = 28;
 
 Si446x tx(pinCS, xoFrequency);
 
@@ -33,6 +34,20 @@ void initModemAlt()
     Serial.println("Failed");
     delay(100);
   }    
+
+
+  Si446x::PartInfo info;
+  tx.getPartInfo(info);
+  Serial.print("Part ID: "); Serial.println(info.getPartID(), HEX);
+  switch (info.getPartID()) {
+    case 0x4362: Serial.println("Silabs Si4362 detected, switching to RX mode"); mode = MODE_RX; break;
+    case 0x4060: Serial.println("Silabs Si4060 detected, switching to TX mode"); mode = MODE_TX; break;
+    default:
+      Serial.println("No radio found... halting");
+      mode = MODE_IDLE; 
+      for (;;);
+      break;
+  }  
 }
 
 void initModem()
@@ -61,7 +76,9 @@ void initModem()
     case 0x4362: Serial.println("Silabs Si4362 detected, switching to RX mode"); mode = MODE_RX; break;
     case 0x4060: Serial.println("Silabs Si4060 detected, switching to TX mode"); mode = MODE_TX; break;
     default:
+      Serial.println("No radio found... halting");
       mode = MODE_IDLE; 
+      for (;;);
       break;
   }
 
@@ -124,13 +141,14 @@ void setup() {
   initModemAlt();
 
 
-  tx.clearIRQ();
+  tx.getIntStatus();
   //tx.disableRadio();
-  //tx.clearIRQ();
+  //tx.getIntStatus();
   delay(500);
 
   if (mode == MODE_RX) {  
-    tx.startRX(0, kPacketLength, Si446x::kStateNoChange, Si446x::kStateRX, Si446x::kStateRX);
+    //tx.startRX(0, kMaxPacketLength, Si446x::kStateNoChange, Si446x::kStateRX, Si446x::kStateRX);
+    tx.startRX(0, 0, Si446x::kStateNoChange, Si446x::kStateRX, Si446x::kStateRX);
   }  
 }
 
@@ -146,11 +164,11 @@ void parseCommand(const String & line) {
     if (cmd == String("xo")) {
       tx.setXOTune(args.toInt());
     }
-    if (cmd == String("tx")) {
+    else if (cmd == String("tx")) {
       mode = MODE_TX;
       initModem();
     }
-    if (cmd == String("rx")) {
+    else if (cmd == String("rx")) {
       mode = MODE_RX;
       initModem();
     }
@@ -191,6 +209,36 @@ void processConsole() {
   }
 }
 
+void debugIRQ() {
+    
+    uint8_t state = tx.getState();
+    Serial.print("State=");
+    Serial.print(state);
+     
+     
+    Si446x::ModemStatus modemStatus;
+    tx.getModemStatus(modemStatus);
+    //tx.getChipStatus();
+
+    Serial.print(" RSSI=");
+    Serial.println(modemStatus.getCurrentRSSI());  
+    Serial.print("Modem pending: ");
+    if (modemStatus.isRSSIPending()) Serial.print("RSSI_OK ");
+    if (modemStatus.isPreambleDetectPending()) Serial.print("PRE_DET ");
+    if (modemStatus.isInvalidPreamblePending()) Serial.print("PRE_INVALID ");
+    if (modemStatus.isSyncDetectPending()) Serial.print("SYN_DET ");
+    if (modemStatus.isInvalidSyncPending()) Serial.print("SYN_INVALID ");
+    Serial.println();
+    
+    Serial.print("Modem status: ");
+    if (modemStatus.isRSSI()) Serial.print("RSSI_OK ");
+    if (modemStatus.isPreambleDetect()) Serial.print("PRE_DET ");
+    if (modemStatus.isInvalidPreamble()) Serial.print("PRE_INVALID ");
+    if (modemStatus.isSyncDetect()) Serial.print("SYN_DET ");
+    if (modemStatus.isInvalidSync()) Serial.print("SYN_INVALID ");
+    Serial.println();   
+}
+
 void loop() {
   static uint16_t count;
   
@@ -207,15 +255,15 @@ void loop() {
     digitalWrite(pinLED, LOW);
     Serial.println("Transmitting...");
   
-    uint8_t data[kPacketLength] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
-  
+    //uint8_t data[kPacketLength] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
+    uint8_t data[kPacketLength] = { 0x06, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
 
     for (uint8_t idx = 0; idx < 8; idx++) 
     {
       uint16_t nTry = 100;
       while (nTry > 0) {
         Si446x::IRQStatus irqStatus;
-        tx.clearIRQ(irqStatus);
+        tx.getIntStatus(irqStatus);
 
         if (irqStatus.isPacketSentPending()) {     
           break;
@@ -223,80 +271,67 @@ void loop() {
         delay(10);
         nTry--;
       }
-      tx.clearIRQ();
+      tx.getIntStatus();
       tx.writeTX(data, kPacketLength); 
       tx.startTX(0, kPacketLength);      
     }
   }
-  else if (mode == MODE_RX && count == 50) {
+  else if (mode == MODE_RX && count == 5) {
     count = 0;
 
-    /*
-    uint8_t state = tx.getState();
-    Serial.print("State=");
-    Serial.print(state);
-
-    Si446x::ModemStatus modemStatus;
-    tx.getModemStatus(modemStatus);
-    //tx.getChipStatus();
-
-    Serial.print(" RSSI=");
-    Serial.println(modemStatus.getCurrentRSSI());
-
-
-    Serial.print("Modem pending status: ");
-    if (modemStatus.isRSSIPending()) Serial.print("RSSI_OK ");
-    if (modemStatus.isPreambleDetectPending()) Serial.print("PRE_DET ");
-    if (modemStatus.isInvalidPreamblePending()) Serial.print("PRE_INVALID ");
-    if (modemStatus.isSyncDetectPending()) Serial.print("SYN_DET ");
-    if (modemStatus.isInvalidSyncPending()) Serial.print("SYN_INVALID ");
-    Serial.println();
-    
-    Serial.print("Modem status: ");
-    if (modemStatus.isRSSI()) Serial.print("RSSI_OK ");
-    if (modemStatus.isPreambleDetect()) Serial.print("PRE_DET ");
-    if (modemStatus.isInvalidPreamble()) Serial.print("PRE_INVALID ");
-    if (modemStatus.isSyncDetect()) Serial.print("SYN_DET ");
-    if (modemStatus.isInvalidSync()) Serial.print("SYN_INVALID ");
-    Serial.println();   
-     */
-
-
-
+    //debugIRQ();
 
     Si446x::IRQStatus irqStatus;
-    tx.clearIRQ(irqStatus);
+    tx.getIntStatus(irqStatus);
 
+    /*
     Serial.print("IRQ: ");
     for (uint8_t idx = 0; idx < 8; idx++) {
       Serial.print(irqStatus.rawData[idx], HEX);
       Serial.print(' ');
     }
     Serial.println();
+     */
 
     if (irqStatus.isPacketRXPending())
     {
-      uint8_t rxCount = tx.getAvailableRX();
-      if (rxCount > 0) {
-        Serial.print("Available: ");
-        Serial.println(rxCount);
-      }
+        static uint16_t index;
+        
+        //debugIRQ();
+        
+        uint8_t packet[kMaxPacketLength];
 
-      
-      Serial.print("Packet: ");
-      
-      uint8_t packet[kPacketLength];
-      tx.readRX(packet, kPacketLength);
+        uint8_t rxCount = tx.getAvailableRX();
+        //if (rxCount > 0) {
+        //  Serial.print("Available: ");
+        //  Serial.println(rxCount);
+        //}
 
-      for (uint8_t idx = 0; idx < kPacketLength; idx++) {
-        Serial.print(packet[idx], HEX);
-        Serial.print(' ');
-      }
-      Serial.println();
-      
-      digitalWrite(pinBuzzer, HIGH);
-      delay(250);
-      digitalWrite(pinBuzzer, LOW);
+        while (rxCount > 0) {
+          Serial.print("Packet #");
+          Serial.print(index++);
+          Serial.print(" : ");
+          
+          for (uint8_t idx = 0; idx < kPacketLength; idx++) {
+            packet[idx] = 0;
+          }
+          tx.readRX(packet, kMaxPacketLength);
+    
+          for (uint8_t idx = 0; idx < kPacketLength; idx++) {
+            Serial.print(packet[idx], HEX);
+            Serial.print(' ');
+          }
+          Serial.println();
+
+          if (rxCount >= kPacketLength) {
+            rxCount -= kPacketLength;          
+          }
+          else rxCount = 0;
+        }
+              
+      //digitalWrite(pinBuzzer, HIGH);
+      //delay(250);
+      //digitalWrite(pinBuzzer, LOW);
     }
     if (irqStatus.isCRCErrorPending()) {
       tx.flushRX();

@@ -10,8 +10,12 @@ public:
     SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
   }
 
-  uint8_t write(uint8_t x) {
-    return SPI.transfer(x);
+  void write(uint8_t x) {
+    SPI.transfer(x);
+  }
+
+  uint8_t read() {
+    return SPI.transfer(0xFF);
   }
 
   void release() {
@@ -213,29 +217,33 @@ public:
 
   //void check(uint8_t param1, uint8_t param2);
 
-  void clearIRQ();
-  void clearIRQ(IRQStatus &status);
+  void getIntStatus();
+  void getIntStatus(IRQStatus &status);
   void getPHStatus();
   void getModemStatus(ModemStatus &status);  
   void getChipStatus(ChipStatus &status);
   
   int16_t getTemperature(); 
+
+  void changeState(State state);
   
 private: 
-  bool waitForCTS(uint16_t timeout = 10);
-  bool waitForResponse(uint8_t *buf = 0, uint8_t len = 0, uint16_t timeout = 200);
-  bool sendCommand(uint8_t cmd, const uint8_t *params = 0, uint8_t paramsLength = 0, uint8_t *reply = 0, uint8_t replyLength = 0, bool waitForCTS = true);
+  bool waitForCTS(uint16_t timeout = 200);
+  bool waitForReply(uint8_t *reply, uint8_t replyLength, uint16_t timeout = 200);
+  
+  bool sendCommand(uint8_t cmd, const uint8_t *data, uint8_t dataLength, uint8_t *reply = 0, uint8_t replyLength = 0, bool pollCTS = true);
+  bool sendImmediate(uint8_t cmd, uint8_t *reply, uint8_t replyLength, bool pollCTS = true);
 
   void setParameter(uint16_t id, uint8_t value);
   void setParameter16(uint16_t id, uint16_t value);
-
-  void setState(State state);
 
   //SPI         _spi;
   //DigitalOut  _cs;
   
   uint32_t    _xtalFrequency;
   uint8_t     _outDiv;
+
+  //bool        _ctsHigh;
 
   /*
   uint8_t     _intPend,   _intStatus;

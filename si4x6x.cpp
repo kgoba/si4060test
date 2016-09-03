@@ -91,113 +91,102 @@ void Si446x::shutdown()
 }
 
 
-/**
- * Gets the 16 bit part number
- */
-/*
-static uint16_t si_trx_get_part_info(void)
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+// SPI communication methods
+// 
+
+
+bool Si446x::waitForReply(uint8_t *reply, uint8_t replyLength, uint16_t timeout)
 {
-  uint8_t buffer[3];
-
-  buffer[0] = SI_CMD_PART_INFO;
-
-  if (_si_trx_transfer(1, 3, buffer)) {
-    return (buffer[1] << 8) | buffer[2];
+  uint8_t cts;
+  while (timeout > 0)
+  {    
+    SPIDevice::select();
+    SPIDevice::write(SI_CMD_READ_CMD_BUFF);
+    cts = SPIDevice::read();
+    if (cts == 0xFF) 
+    {
+      for (; replyLength > 0; replyLength--) 
+      {
+        *reply++ = SPIDevice::read();
+      }
+      SPIDevice::release();
+      break;
+    }
+    SPIDevice::release();
+    
+    delay(1);
+    timeout--;
   }
-  else {
-    return 0xFFFF;
+
+  if (timeout == 0) 
+  {
+    // TODO: possibly indicate error
+    return false;
   }
+
+  //if (cts == 0xFF) 
+  //{
+  //  _ctsHigh = true;
+  //}
+
+  return (cts == 0xFF);
 }
-*/
 
 
 bool Si446x::waitForCTS(uint16_t timeout)
 { 
-  /* Poll CTS over SPI */
-  while (true)
-  {    
-    SPIDevice::select();
-    SPIDevice::write(SI_CMD_READ_CMD_BUFF);
-    uint8_t r = SPIDevice::write(0xFF);
-    if (r == 0xFF) break;
-    SPIDevice::release();
-    
-    delay(1);
-    if (--timeout == 0) return false;
-  }
-
-  SPIDevice::release();
-  //delayMicroseconds(1);
-  delay(1);
-  return true;
+  return waitForReply(0, 0, timeout);
 }
 
 
-bool Si446x::waitForResponse(uint8_t *buf, uint8_t len, uint16_t timeout)
+bool Si446x::sendCommand(uint8_t cmd, const uint8_t *data, uint8_t dataLength, uint8_t *reply, uint8_t replyLength, bool pollCTS)
 {
-  /* Poll CTS over SPI */
-  while(true)
-  {
-    SPIDevice::select();
-    SPIDevice::write(SI_CMD_READ_CMD_BUFF);
-    uint8_t r = SPIDevice::write(0xFF);
-    if(r == 0xFF) break;
-    SPIDevice::release();
-    
-    delay(1);
-    if (--timeout == 0) {
-      Serial.println("TIMEOUT");
+  if (pollCTS) {
+    if (!waitForCTS())
       return false;
-    }
   }
-
-  //if (len > 0) Serial.print("<");
-  /* Read the requested data */
-  while (len > 0) {
-    uint8_t x = SPIDevice::write(0xFF);
-    //Serial.print(x, HEX);
-    //if (len > 1) Serial.print(' ');
-    //else Serial.println();
-    *(buf++) = x;
-    len--;
-  }
-
-  SPIDevice::release();
-  //delayMicroseconds(1);
-  delay(1);
-  //Serial.print("SUCCESS ");
-  //Serial.println(timeout);
-  return true;
-}
-
-
-bool Si446x::sendCommand(uint8_t cmd, const uint8_t *data, uint8_t dataLength, uint8_t *reply, uint8_t replyLength, bool waitForCTS)
-{
-  /* Set SS low to select chip */
+  
   SPIDevice::select();
-
-  /* Send the command and data */
-  //Serial.print(">");
-  //Serial.print(cmd, HEX);
-  //if (dataLength > 0) Serial.print(' ');
   SPIDevice::write(cmd);
   for(; dataLength; dataLength--) {
     uint8_t x = *(data++);
     SPIDevice::write(x);
-    //Serial.print(x, HEX);
-    //if (dataLength > 1) Serial.print(' ');
-    //else Serial.println();
   }
-
-  /* Unselect the chip */
   delayMicroseconds(1); /* Select hold time min 50 ns */
   SPIDevice::release();
 
-  //delayMicroseconds(1);
-  delay(1);
-  if (!waitForCTS) return true;
-  return waitForResponse(reply, replyLength);
+  if (replyLength == 0) {
+    return true;
+  }
+  else {
+    return waitForReply(reply, replyLength);
+  }
 }
+
+
+bool Si446x::sendImmediate(uint8_t cmd, uint8_t *reply, uint8_t replyLength, bool pollCTS)
+{
+  if (pollCTS) {
+    if (!waitForCTS())
+      return false;
+  }
+  
+  SPIDevice::select();
+  SPIDevice::write(cmd);
+  for(; replyLength; replyLength--) {
+    uint8_t x = SPIDevice::read();
+    *(reply++) = x;
+  }
+  delayMicroseconds(1); /* Select hold time min 50 ns */
+  SPIDevice::release();
+
+  return true;
+}
+
+
 
 bool Si446x::configure(uint8_t *params)
 {
@@ -206,6 +195,9 @@ bool Si446x::configure(uint8_t *params)
     params++;
    
     if (!sendCommand(*params, params + 1, length - 1)) {
+      return false;
+    }
+    if (!waitForReply(0, 0)) {
       return false;
     }
     
@@ -290,7 +282,7 @@ void Si446x::setModulation(ModulationType modType, ModulationSource modSource, u
 }
 
 
-void Si446x::setState(Si446x::State state)
+void Si446x::changeState(Si446x::State state)
 {
   uint8_t data[] = { 
     (uint8_t)state
@@ -301,13 +293,13 @@ void Si446x::setState(Si446x::State state)
 
 void Si446x::enableTX(void)
 {
-  setState(kStateTX);
+  changeState(kStateTX);
 }
 
 
 void Si446x::disableRadio(void)
 {
-  setState(kStateReady);
+  changeState(kStateReady);
 }
 
 void Si446x::setFrequency(uint32_t freq)
@@ -357,7 +349,7 @@ void Si446x::setFrequency(uint32_t freq)
     sendCommand(SI_CMD_SET_PROPERTY, data, sizeof(data));
   }
   
-  //setState(kStateTXTune);
+  //changeState(kStateTXTune);
 }
 
 void Si446x::startTX(uint8_t channel, uint16_t pktLength, State txCompleteState)
@@ -372,7 +364,7 @@ void Si446x::startTX(uint8_t channel, uint16_t pktLength, State txCompleteState)
   };
 
   /* Change to ready state */
-  //setState(kStateReady);
+  //changeState(kStateReady);
 
   /* Send START_TX command */
   sendCommand(SI_CMD_START_TX, data, sizeof(data), 0, 0, false);
@@ -401,7 +393,7 @@ void Si446x::writeTX(const uint8_t *data, uint8_t length)
 
 void Si446x::readRX(uint8_t *data, uint8_t length)
 {
-  sendCommand(SI_CMD_READ_RX_FIFO, 0, 0, data, length, false);
+  sendImmediate(SI_CMD_READ_RX_FIFO, data, length, false);
 }
 
 void Si446x::configureGPIO(uint8_t gpio0, uint8_t gpio1, uint8_t gpio2, uint8_t gpio3, uint8_t nirq, uint8_t sdo, uint8_t genConfig)
@@ -525,14 +517,14 @@ uint8_t Si446x::getAvailableRX()
   return reply[0];
 }
 
-void Si446x::clearIRQ(void)
+void Si446x::getIntStatus(void)
 {
   uint8_t data[] = { 0x00, 0x00, 0x00 };
   //uint8_t data[] = { 0xFF, 0xFF, 0xFF };
   sendCommand(SI_CMD_GET_INT_STATUS, data, sizeof(data));
 }
 
-void Si446x::clearIRQ(IRQStatus &status)
+void Si446x::getIntStatus(IRQStatus &status)
 {
   uint8_t data[] = { 0x00, 0x00, 0x00 };
   sendCommand(SI_CMD_GET_INT_STATUS, data, sizeof(data), status.rawData, 8);
